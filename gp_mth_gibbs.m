@@ -105,7 +105,11 @@ for g = 1:opt.nGibbsIter
         arate_Kf    = acc_Kf_all / 50;
         
         %disp(['Gibbs iter: ',num2str(g),' arate(noise)=',num2str(arate_noise,'%2.2f'),' arate(Kf)=',num2str(arate_Kf,'%2.2f')]);
-        disp(['Gibbs iter: ',num2str(g),' arate(f)=',num2str(arate_f,'%2.2f')]);
+        if sum(~rid > 0)
+            disp(['Gibbs iter: ',num2str(g),' arate(f)=',num2str(arate_f,'%2.2f')]);
+        else
+            disp(['Gibbs iter: ',num2str(g)]);
+        end
         acc_noise_all = 0; acc_f_all = 0; acc_Kf_all    = 0; 
         
         % update stats
@@ -152,50 +156,52 @@ for g = 1:opt.nGibbsIter
     Kc = K(~rid,~rid);
     Kr = K(rid,rid);
     
+    f_new = zeros(size(f));
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     % sample f (classification)
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    f_new = zeros(size(f));
-    
-    % Conditional prior. This can be done faster using partitioned inverses
-    muc      = (K(~rid,rid)/Kr)*f(rid); 
-    Sc       = Kc - K(~rid,rid)/Kr*K(~rid,rid)';
-    %Mu = [Mu muc];
-    
-    % Quantities based on Sc needed for HMC
-    InvSc    = inv(Sc);% + 1e-3*eye(size(Sc)));
-    L_Sc     = chol(Sc)';
-    LogDetSc = 2*sum(log(diag(L_Sc)));
-    Yc       = [y(~rid) 1-y(~rid)];
-    % WATCH OUT!! mean is subtracted here...
-    fc       = f(~rid)-muc;
-    %fc       = f(~rid);
-    %alphac   = solve_chol(L_Sc',fc-muc);
+    if sum(~rid > 0)
         
-    %gxargs_f = {InvSc, Yc};
-    fxargs_f = {Yc, InvSc, LogDetSc};
-    %fxargs_f = {Yc, InvSc, LogDetSc, muc};
-    %fxargs_f = {Yc, alphac, LogDetSc, muc};
-   
-    if opt.UseRMHMC
-        error('RMHMC is not implemented for this problem');
-    else
-        if opt.UseGMassForHMC
-            %Gf = feval('hmc_compute_G_f_fixedW', fc, gxargs_f{:});
-            Gf = InvSc;
+        % Conditional prior. This can be done faster using partitioned inverses
+        muc      = (K(~rid,rid)/Kr)*f(rid);
+        Sc       = Kc - K(~rid,rid)/Kr*K(~rid,rid)';
+        %Mu = [Mu muc];
+        
+        % Quantities based on Sc needed for HMC
+        InvSc    = inv(Sc);% + 1e-3*eye(size(Sc)));
+        L_Sc     = chol(Sc)';
+        LogDetSc = 2*sum(log(diag(L_Sc)));
+        Yc       = [y(~rid) 1-y(~rid)];
+        % WATCH OUT!! mean is subtracted here...
+        fc       = f(~rid)-muc;
+        %fc       = f(~rid);
+        %alphac   = solve_chol(L_Sc',fc-muc);
+        
+        %gxargs_f = {InvSc, Yc};
+        fxargs_f = {Yc, InvSc, LogDetSc};
+        %fxargs_f = {Yc, InvSc, LogDetSc, muc};
+        %fxargs_f = {Yc, alphac, LogDetSc, muc};
+        
+        if opt.UseRMHMC
+            error('RMHMC is not implemented for this problem');
         else
-            Gf = eye(length(f));
+            if opt.UseGMassForHMC
+                %Gf = feval('hmc_compute_G_f_fixedW', fc, gxargs_f{:});
+                Gf = InvSc;
+            else
+                Gf = eye(length(f));
+            end
+            L_Gf        = chol(Gf)';
+            %InvGf       = inv(Gf);
+            InvGf       = Sc;
+            [Ef, fc_new] = hmc(fc, 'hmc_posterior_f', opt.rmhmc,  L_Gf, InvGf, fxargs_f{:});
+            %[Ef, fc_new] = hmc(fc, 'gp_mth_hmc_posterior_f', opt.rmhmc,  L_Gf, InvGf, fxargs_f{:});
+            fc_new       = fc_new(:,end); % just take the last sample
         end
-        L_Gf        = chol(Gf)';
-        %InvGf       = inv(Gf);
-        InvGf       = Sc;
-        [Ef, fc_new] = hmc(fc, 'hmc_posterior_f', opt.rmhmc,  L_Gf, InvGf, fxargs_f{:});           
-        %[Ef, fc_new] = hmc(fc, 'gp_mth_hmc_posterior_f', opt.rmhmc,  L_Gf, InvGf, fxargs_f{:});           
-        fc_new       = fc_new(:,end); % just take the last sample 
+        % test acceptance
+        if norm(fc) ~= norm(fc_new), acc_f = 1; else acc_f = 0; end
+        f_new(~rid) = fc_new(1:sum(~rid));
     end
-    % test acceptance
-    if norm(fc) ~= norm(fc_new), acc_f = 1; else acc_f = 0; end
-    f_new(~rid) = fc_new(1:sum(~rid));
     
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     % sample f (regression)
@@ -217,8 +223,10 @@ for g = 1:opt.nGibbsIter
     %f_new(rid) = L_Sr*randn(sum(rid),1);
     
     % update f, but only if fc was accepted
-    if acc_f, f = f_new; end
-    acc_f_all = acc_f_all + acc_f;  
+    if sum(~rid > 0)
+        if acc_f, f = f_new; end
+        acc_f_all = acc_f_all + acc_f;
+    end
 
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     % sample task covariance
